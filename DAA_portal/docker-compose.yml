@@ -1,0 +1,15 @@
+services:
+  portal:
+    build: .
+    # Bind to loopback only — reachable by the reverse proxy on this host
+    # but not directly from the network.
+    ports:
+      - "6898:8080"
+    volumes:
+      - ./content:/content
+    restart: unless-stopped
+    environment:
+      - CONTENT_DIR=/content
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
