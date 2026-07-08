@@ -1,7 +1,14 @@
-# Personal Portal
+# DAA Portal
 
 A self-hosted, Docker-based markdown portal with obfuscated URLs and no authentication.
 All URLs are hard to guess; only the index URL and direct article links are usable.
+
+## Scope
+Markdown files representer as website without coding and without working with html.
+
+## Usage high-level overview
+- Create a folder under the content/ - that will be an "article" category
+- drop .md file into that folder - that is your article which will be accessible from DAA html portal straight away
 
 ---
 
