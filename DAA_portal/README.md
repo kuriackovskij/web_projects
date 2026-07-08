@@ -2,6 +2,7 @@
 
 A self-hosted, Docker-based markdown portal with obfuscated URLs and no authentication.
 All URLs are hard to guess; only the index URL and direct article links are usable.
+DAA = Dynamic Articles Aggregator
 
 ## Scope
 Markdown files representer as website without coding and without working with html.
@@ -9,6 +10,10 @@ Markdown files representer as website without coding and without working with ht
 ## Usage high-level overview
 - Create a folder under the content/ - that will be an "article" category
 - drop .md file into that folder - that is your article which will be accessible from DAA html portal straight away
+
+## Use-cases
+Might be plenty of use-cases like hosting a simple website, blog etc
+My use-case - AI Agent generated content without any API or other whistles, just simple md file generation and its placement in the filesystem.
 
 ---
 
