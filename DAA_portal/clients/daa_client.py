@@ -36,6 +36,9 @@ def main():
         p.add_argument('file', help='local destination for get, source for put')
     p = sub.add_parser('delete')
     p.add_argument('article', help='Category/filename.md')
+    p = sub.add_parser('move', help='rename an article or move it to another category')
+    p.add_argument('article', help='current Category/filename.md')
+    p.add_argument('destination', help='new Category/filename.md')
     args = parser.parse_args()
     config = settings()
 
@@ -64,13 +67,18 @@ def main():
         path = '/api/v1/articles'
         if args.command != 'list':
             path += '/' + urllib.parse.quote(args.article, safe='/')
+        if args.command == 'move':
+            path += '/move'
         headers = {'Authorization': 'Bearer ' + config['DAA_API_TOKEN']}
         method = {'list': 'GET', 'get': 'GET', 'put': 'PUT',
-                  'delete': 'DELETE'}[args.command]
+                  'delete': 'DELETE', 'move': 'POST'}[args.command]
         data = None
         if args.command == 'put':
             data = Path(args.file).read_bytes()
             headers['Content-Type'] = 'text/markdown; charset=utf-8'
+        elif args.command == 'move':
+            data = json.dumps({'destination': args.destination}).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(base + path, data=data,
                                          headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=30) as response:

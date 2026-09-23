@@ -220,6 +220,44 @@ def api_list_articles():
     return jsonify({'articles': articles})
 
 
+@app.route('/api/v1/articles/<path:rel_path>/move', methods=['POST'])
+def api_move_article(rel_path: str):
+    _api_authorized()
+    source = _managed_article(rel_path)
+    if source is None:
+        abort(400)
+    if request.mimetype != 'application/json':
+        abort(415)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {'destination'}:
+        abort(400)
+    destination_path = payload['destination']
+    if not isinstance(destination_path, str) or destination_path == rel_path:
+        abort(400)
+    destination = _managed_article(destination_path)
+    if destination is None:
+        abort(400)
+    if not source.is_file():
+        abort(404)
+    if destination.exists():
+        abort(409)
+
+    destination.parent.mkdir(mode=0o750, exist_ok=True)
+    try:
+        # A hard link claims the new name without overwriting an existing file.
+        # Both category directories are on the same content filesystem.
+        os.link(source, destination, follow_symlinks=False)
+    except FileExistsError:
+        abort(409)
+    except FileNotFoundError:
+        abort(404)
+    source.unlink()
+    article_hash = register(destination_path)
+    return jsonify({'previous_path': rel_path,
+                    'path': destination_path,
+                    'hash': article_hash})
+
+
 @app.route('/api/v1/articles/<path:rel_path>', methods=['GET', 'PUT', 'DELETE'])
 def api_article(rel_path: str):
     _api_authorized()

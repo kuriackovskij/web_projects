@@ -3,8 +3,8 @@
 This is the complete client-facing contract for the current article-management
 API. It describes the behavior implemented in `app.py`, not proposed features.
 The API manages UTF-8 Markdown files in a private content directory. A human
-or agent can also use `clients/daa_client.py`, which implements the same four
-operations and manages the SSH tunnel automatically.
+or agent can also use `clients/daa_client.py`, which implements the same five
+commands and manages the SSH tunnel automatically.
 
 ## Where to send requests
 
@@ -19,7 +19,8 @@ The bundled `daa-client` starts and closes that forward for each command:
 daa-client list
 daa-client put News/example.md /path/to/local/article.md
 daa-client get News/example.md /path/to/new-local-copy.md
-daa-client delete News/example.md
+daa-client move News/example.md Research/renamed.md
+daa-client delete Research/renamed.md
 ```
 
 For a different HTTP client, start an equivalent forward in a separate
@@ -105,6 +106,7 @@ not match a route may yield `404`. Only the API routes below are supported.
 | List current articles | `GET /api/v1/articles` | None | `200` JSON |
 | Read Markdown source | `GET /api/v1/articles/<Category>/<filename>.md` | None | `200` Markdown |
 | Create or replace | `PUT /api/v1/articles/<Category>/<filename>.md` | UTF-8 Markdown | `201` new or `200` replaced, JSON |
+| Rename or move category | `POST /api/v1/articles/<Category>/<filename>.md/move` | JSON destination | `200` JSON |
 | Delete | `DELETE /api/v1/articles/<Category>/<filename>.md` | None | `204`, empty body |
 
 ### List articles
@@ -173,6 +175,47 @@ parameter is accepted). The body must decode as UTF-8 and is limited to
 UTF-8 yields `400`; an oversized request yields `413`. Concurrent writes to
 the same path have no version check: the last completed replacement wins.
 
+To **modify an existing article**, read it with `GET` if needed, edit its
+Markdown locally, then `PUT` the *entire updated body* to the same path. A
+successful update returns `200`; its path hash and reader URL stay unchanged.
+There is no line-level patch endpoint or edit history.
+
+### Rename or move an article to another category
+
+The same operation handles a filename change, category change, or both:
+
+```http
+POST /api/v1/articles/News/example.md/move HTTP/1.1
+Authorization: Bearer <api-token>
+Content-Type: application/json
+
+{"destination":"Research/renamed.md"}
+```
+
+`destination` is a complete article path, subject to the same path rules as
+the source. The JSON body must be an object containing exactly one string
+field, `destination`. The source must exist; the destination must not exist
+and must differ from the source. A missing source returns `404`; an occupied
+destination returns `409` and neither article is overwritten; a malformed
+body or invalid path returns `400`; a non-JSON media type returns `415`. The
+request body has the same 1 MiB request limit. If the destination category
+does not exist, the API creates it. The move requires both categories to be
+on the same filesystem, as they are in the standard content bind mount.
+
+Success is `200` with the old path, new path, and new path-derived hash:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"previous_path":"News/example.md","path":"Research/renamed.md","hash":"<new-32-character-path-hash>"}
+```
+
+The Markdown content is preserved, but the old reader URL stops working and
+the new path has a new reader URL. Update any references to the old URL. The
+old category directory may remain empty. The move does not replace content;
+use `PUT` on the new path to update it afterward if needed.
+
 ### Delete an article
 
 ```http
@@ -218,6 +261,12 @@ curl --config "$DAA_CURL_CONFIG" --include --request PUT \
   --data-binary @example.md \
   "$DAA_BASE_URL/api/v1/articles/News/example.md"
 
+# Rename, move to another category, or both; target must not already exist.
+curl --config "$DAA_CURL_CONFIG" --include --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"destination":"Research/renamed.md"}' \
+  "$DAA_BASE_URL/api/v1/articles/News/example.md/move"
+
 # Delete the file; expect 204 and no body.
 curl --config "$DAA_CURL_CONFIG" --include --request DELETE \
   "$DAA_BASE_URL/api/v1/articles/News/example.md"
@@ -227,20 +276,22 @@ The bundled `daa-client` is preferable for automation because it handles the
 SSH lifecycle and token loading without a separate curl config. Its `get`
 command refuses to overwrite an existing local destination. Its `put` command
 reads the source file and prints the JSON result; `list` prints JSON;
-`delete` prints `deleted` on success. A failed HTTP request exits nonzero.
+`move` prints the JSON result; `delete` prints `deleted` on success. A failed
+HTTP request exits nonzero.
 
 ## Status codes and operational limits
 
 | Status | Meaning in this API |
 |---|---|
-| `200` | List, read, or replace succeeded. |
+| `200` | List, read, replace, or move succeeded. |
 | `201` | New article created. |
 | `204` | Article deleted; no response body. |
-| `400` | Invalid managed article path or invalid UTF-8 PUT body. |
+| `400` | Invalid managed article path, invalid UTF-8 PUT body, or invalid move JSON/destination. |
 | `401` | Missing or incorrect bearer token. |
 | `404` | Missing article, unmatched path, or unsupported method (intentionally concealed). |
+| `409` | Move destination already exists; no article is overwritten. |
 | `413` | Request body exceeds 1 MiB. |
-| `415` | PUT body is not `text/markdown`. |
+| `415` | PUT body is not `text/markdown`, or move body is not JSON. |
 | `429` | Per-client-IP rate limit exceeded. |
 | `503` | Portal API token is absent or shorter than 32 characters; no API operation is allowed. |
 
@@ -250,9 +301,7 @@ are JSON. Handle status codes first. `GET`/`DELETE` of a missing article
 return `404`; no conditional requests, batch operations, search, revisions,
 or pagination are available in v1.
 
-There is no rename/move endpoint. To move an article, read its source, `PUT`
-the full body to a new path, verify the new item, then `DELETE` the old path.
-This changes the reader URL because its 32-character hash is the first 32 hex
+Renaming or moving changes the reader URL because its 32-character hash is the first 32 hex
 characters of SHA-256 of the **relative path** (not the file contents).
 Overwriting a file at the same path preserves its reader URL. A URL can be
 formed as `https://<reader-host>/<hash>`; the private index URL is separate

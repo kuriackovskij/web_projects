@@ -77,12 +77,17 @@ backend. Rotate both independently if either may have been exposed.
 daa-client list
 daa-client put News/example.md /path/to/local/article.md
 daa-client get News/example.md /path/to/new-local-copy.md
-daa-client delete News/example.md
+daa-client move News/example.md Research/renamed.md
+daa-client delete Research/renamed.md
 ```
 
-`put` creates or replaces a Markdown article and returns its stable path hash.
+`put` creates or fully updates a Markdown article and returns its stable path
+hash; `get` reads its raw Markdown. `move` renames an article, changes its
+category, or both, without overwriting an occupied destination. Moving changes
+the path hash and reader URL.
 The corresponding HTTP endpoints are `GET /api/v1/articles` and `GET`, `PUT`,
-`DELETE /api/v1/articles/<Category>/<filename>.md`; `PUT` requires
+`DELETE /api/v1/articles/<Category>/<filename>.md`, plus
+`POST /api/v1/articles/<Category>/<filename>.md/move`; `PUT` requires
 `Content-Type: text/markdown` and has a 1 MiB body limit. Only one category
 level is accepted. Existing direct filesystem writes on the portal host continue to
 work. Do not send the bearer token to the plain HTTP LAN endpoint; use the
