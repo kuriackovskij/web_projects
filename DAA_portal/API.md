@@ -283,7 +283,9 @@ HTTP request exits nonzero.
 | `503` | Portal API token is absent or shorter than 32 characters; no API operation is allowed. |
 
 The in-app rate limits are 240 requests/minute and 8 requests/second per
-client IP; a proxy can impose additional limits. Do not assume error bodies
+reported client IP, using in-memory counters. The deployed public proxy
+overwrites `X-Forwarded-For` with its observed source address. These limits
+are best-effort, not an authentication boundary. Do not assume error bodies
 are JSON. Handle status codes first. `GET`/`DELETE` of a missing article
 return `404`; no conditional requests, batch operations, search, revisions,
 or pagination are available in v1.

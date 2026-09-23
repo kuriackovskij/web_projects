@@ -115,15 +115,20 @@ My use-case includes AI-generated Markdown articles written directly to the file
 
 | Layer | Detail |
 |---|---|
-| Default root `/` | Returns `204 No Content` — nothing to scrape or attack |
+| Default root `/` | Returns `204 No Content` with an empty body |
+| Unknown reader path | Returns `404 Not Found` with an empty body; DAA does not use NGINX's non-standard `444` |
 | Index URL | 40-char random hex, generated on first start and stored in `content/.index_secret` |
-| Article URLs | SHA-256 of the relative file path, truncated to 32 hex chars, stored in SQLite |
+| Article URLs | Deterministic SHA-256 of the relative file path, truncated to 32 hex chars, stored in SQLite; the hash is not authentication |
 | Hidden files | `.index_secret` and `.mappings.db` can never be served over HTTP (rejected by extension check + hidden-file guard + never registered in the DB) |
-| Rate limiting | 240 requests / minute · 8 requests / second per IP (in-app, before the proxy) |
-| Security headers | `noindex`, `nofollow`, `noarchive`, strict CSP, no `Server` header |
+| Rate limiting | Nominally 240 requests / minute and 8 requests / second per reported client address, in-app and in-memory; not a hard security boundary |
+| Security headers | `noindex`, `nofollow`, `noarchive`, CSP, and other response headers set by the app |
 | Port binding | Configurable via `DAA_BIND_IP`; restrict upstream network access separately from application auth |
 
-Brute-forcing article paths: at 240 req/min the SHA-256 space (2¹²⁸ paths) would take longer than the age of the universe.
+Blindly guessing a 32-hex-character article hash is impractical, but anyone
+who guesses an article's category and filename can calculate its hash offline.
+The private index URL is separately generated at random. The existing empty
+`204`/`404` reader behavior is intentional; switching to `444` would not make
+predictable article paths harder to discover.
 
 ---
 
@@ -148,14 +153,15 @@ docker compose version
 
 ```bash
 # On your local machine
-scp -r /path/to/your/website user@your-server:~/portal
+scp -r /path/to/web_projects/DAA_portal user@your-server:~/portal
 ```
 
 Or clone / pull directly on the server — whatever you prefer.
 
 ### 2 — Build and start
 
-All commands are run from the `website/` directory (where `docker-compose.yml` lives).
+All commands are run from the copied `DAA_portal/` directory (where
+`docker-compose.yml` lives).
 
 ```bash
 cd ~/portal
@@ -171,13 +177,13 @@ On **first** start the app generates a secret token and writes it to `content/.i
 
 ```bash
 cat content/.index_secret
-# Example output: dda9023f4f1851c33f231ae3b4f4598eca1f7c42
+# Example output: <generated-40-hex-character-value>
 ```
 
 Your index is reachable at:
 
 ```
-https://yourdomain.com/dda9023f4f1851c33f231ae3b4f4598eca1f7c42
+https://yourdomain.com/<generated-40-hex-character-value>
 ```
 
 **Keep this value private.** It never changes unless you delete the file.
@@ -254,7 +260,7 @@ The category disappears from the index on the next load.
 ## Directory structure
 
 ```
-website/                   ← docker compose root (copy this to the server)
+DAA_portal/                ← docker compose root (copy this to the server)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
@@ -319,7 +325,7 @@ server {
         proxy_pass         http://PORTAL_SERVER_IP:6898;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-For   $remote_addr;
         proxy_set_header   X-Forwarded-Proto $scheme;
         proxy_redirect     off;
 
