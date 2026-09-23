@@ -195,6 +195,19 @@ https://yourdomain.com/<generated-40-hex-character-value>
 
 **Keep this value private.** It never changes unless you delete the file.
 
+### Browse the index
+
+The private index lists every category in a sticky menu on the left. On narrow
+screens, the menu becomes a horizontally scrollable bar above the article list.
+Select a category to show and open its articles; this also clears any active
+date range so all articles in that category are shown. Select **All categories**
+to return to the full category list.
+
+Categories in the main list start collapsed. Select a category heading to open
+or close it. The existing sort and date controls still filter the articles,
+and the category selector in the controls can also narrow the list. Article
+counts beside category names update after an article is deleted from the index.
+
 ---
 
 ## Managing content

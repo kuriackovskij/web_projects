@@ -585,7 +585,31 @@ header {
 .header-right { display: flex; align-items: center; gap: 0.5rem; }
 .header-right label { font-size: 0.75rem; color: var(--fg-faint); }
 
-main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1.5rem 3rem; }
+main { flex: 1; max-width: 1240px; width: 100%; margin: 0 auto; padding: 1.5rem 1.5rem 3rem; }
+.index-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.index-content { min-width: 0; }
+.category-nav {
+    position: sticky;
+    top: 1.25rem;
+    max-height: calc(100vh - 2.5rem);
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.9rem 0.65rem;
+}
+.nav-title { color: var(--fg-faint); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; padding: 0 0.65rem 0.5rem; }
+.nav-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.nav-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    width: 100%; border: 0; border-radius: var(--radius-sm); background: none;
+    color: var(--fg-muted); cursor: pointer; text-align: left;
+    padding: 0.55rem 0.65rem; font-size: 0.85rem;
+}
+.nav-item:hover, .nav-item:focus-visible { background: var(--bg-lift); color: var(--fg); }
+.nav-item.active { background: var(--bg-lift); color: var(--accent); font-weight: 600; }
+.nav-name { overflow-wrap: anywhere; }
+.nav-count { color: var(--fg-faint); font-size: 0.72rem; flex-shrink: 0; }
 
 /* Controls */
 .controls {
@@ -685,6 +709,7 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
     border-radius: var(--radius);
     overflow: hidden;
     transition: border-color 0.2s;
+    scroll-margin-top: 5rem;
 }
 .category:hover { border-color: var(--bg-lift); }
 .cat-header {
@@ -701,6 +726,7 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
     color: var(--fg);
 }
 .cat-header:hover { background: var(--bg-lift); }
+.cat-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cat-arrow {
     color: var(--accent);
     font-size: 0.9rem;
@@ -771,6 +797,11 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
 @media (max-width: 640px) {
     header { padding: 0.85rem 1rem; }
     main { padding: 1rem 1rem 2rem; }
+    .index-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+    .category-nav { top: 0; z-index: 2; max-height: none; overflow: visible; padding: 0.55rem; }
+    .nav-title { padding: 0 0.45rem 0.35rem; }
+    .nav-list { flex-direction: row; overflow-x: auto; padding-bottom: 0.15rem; }
+    .nav-item { width: auto; white-space: nowrap; flex-shrink: 0; padding: 0.4rem 0.65rem; }
     .ctrl-sep { display: none; }
     .ctrl-date { width: 110px; }
 }
@@ -935,6 +966,11 @@ async function deleteArticle(btn) {
         item.remove();
         category.querySelector('.cat-count').textContent =
             category.querySelectorAll('.article-item').length;
+        document.querySelectorAll('.nav-item').forEach(nav => {
+            if (nav.dataset.cat === category.dataset.cat)
+                nav.querySelector('.nav-count').textContent =
+                    category.querySelectorAll('.article-item').length;
+        });
         applyControls();
     } catch (error) {
         alert('Could not delete the article: ' + error.message);
@@ -943,8 +979,25 @@ async function deleteArticle(btn) {
 }
 
 function toggleCat(btn) {
-    btn.classList.toggle('collapsed');
-    btn.nextElementSibling.classList.toggle('hidden');
+    const expanded = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(expanded));
+    btn.classList.toggle('collapsed', !expanded);
+    btn.nextElementSibling.classList.toggle('hidden', !expanded);
+}
+
+function chooseCategory(name) {
+    const select = document.getElementById('cat-select');
+    select.value = name;
+    setPreset('all', document.querySelector('.pbtn'));
+    if (name) {
+        const category = [...document.querySelectorAll('.category')]
+            .find(el => el.dataset.cat === name);
+        if (category) {
+            const header = category.querySelector('.cat-header');
+            if (header.getAttribute('aria-expanded') !== 'true') toggleCat(header);
+            category.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+    }
 }
 
 function setPreset(preset, btn) {
@@ -1002,12 +1055,18 @@ function applyControls() {
         });
         visible.forEach(el => container.appendChild(el));
         const anyVisible = items.some(i => i.style.display !== 'none');
-        catEl.style.display = anyVisible ? '' : 'none';
+        catEl.style.display = (anyVisible || (!items.length && !fromDate && !toDate)) ? '' : 'none';
         if (anyVisible) totalVisible += visible.length;
     });
 
     const el = document.getElementById('visible-count');
     if (el) el.textContent = totalVisible;
+    document.querySelectorAll('.nav-item').forEach(btn => {
+        const active = btn.dataset.cat === selCat;
+        btn.classList.toggle('active', active);
+        if (active) btn.setAttribute('aria-current', 'true');
+        else btn.removeAttribute('aria-current');
+    });
 }
 
 document.addEventListener('DOMContentLoaded', () => applyControls());
@@ -1018,6 +1077,15 @@ document.addEventListener('DOMContentLoaded', () => applyControls());
 
 def _render_index(cats: list[dict]) -> str:
     total = sum(len(c['articles']) for c in cats)
+
+    nav_html = '<button class="nav-item active" type="button" data-cat="" aria-current="true" onclick="chooseCategory(\'\')"><span class="nav-name">All categories</span></button>'
+    nav_html += ''.join(
+        f'<button class="nav-item" type="button" data-cat="{escape(c["name"])}" '
+        f'onclick="chooseCategory(this.dataset.cat)">'
+        f'<span class="nav-name">{escape(c["name"])}</span>'
+        f'<span class="nav-count">{len(c["articles"])}</span></button>'
+        for c in cats
+    )
 
     cat_options = '<option value="">All categories</option>' + ''.join(
         f'<option value="{escape(c["name"])}">{escape(c["name"])}</option>'
@@ -1040,12 +1108,12 @@ def _render_index(cats: list[dict]) -> str:
             )
         cat_html += (
             f'<div class="category" data-cat="{escape(cat["name"])}">'
-            f'<button class="cat-header" onclick="toggleCat(this)">'
+            f'<button class="cat-header collapsed" type="button" aria-expanded="false" onclick="toggleCat(this)">'
             f'<span class="cat-arrow">&#9662;</span>'
             f'<span class="cat-name">{escape(cat["name"])}</span>'
             f'<span class="cat-count">{len(cat["articles"])}</span>'
             f'</button>'
-            f'<div class="cat-articles">{arts_html}</div>'
+            f'<div class="cat-articles hidden">{arts_html}</div>'
             f'</div>'
         )
 
@@ -1071,6 +1139,12 @@ def _render_index(cats: list[dict]) -> str:
   </div>
 </header>
 <main>
+  <div class="index-layout">
+  <nav class="category-nav" aria-label="Categories">
+    <div class="nav-title">Categories</div>
+    <div class="nav-list">{nav_html}</div>
+  </nav>
+  <div class="index-content">
   <div class="controls">
     <div class="ctrl-group">
       <span class="ctrl-label">Sort</span>
@@ -1104,6 +1178,8 @@ def _render_index(cats: list[dict]) -> str:
   <div class="stats-bar">Showing <span id="visible-count">{total}</span> articles</div>
   <div class="categories">{cat_html}</div>
   {'<p class="no-results">No categories found. Add directories to the content folder.</p>' if not cats else ''}
+  </div>
+  </div>
 </main>
 <footer>By Aleks K</footer>
 <script>{_INDEX_JS}{_THEME_JS}</script>
