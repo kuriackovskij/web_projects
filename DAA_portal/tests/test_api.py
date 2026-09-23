@@ -34,6 +34,35 @@ class ArticleApiTest(unittest.TestCase):
         self.assertEqual(client.delete(url, headers=headers).status_code, 204)
         self.assertEqual(client.get(url, headers=headers).status_code, 404)
 
+    def test_index_button_deletes_file_without_exposing_control_on_article(self):
+        from app import get_index_hash, register
+
+        client = self.app.test_client()
+        article = Path(self.temp.name, 'News/delete-from-index.md')
+        article.parent.mkdir(exist_ok=True)
+        article.write_text('# Delete me', encoding='utf-8')
+        index_hash = get_index_hash()
+        article_hash = register('News/delete-from-index.md')
+        index = client.get('/' + index_hash)
+        self.assertEqual(index.status_code, 200)
+        self.assertIn(b'data-hash="' + article_hash.encode() + b'"', index.data)
+        self.assertIn(b'Permanently delete', index.data)
+        direct = client.get('/' + article_hash)
+        self.assertEqual(direct.status_code, 200)
+        self.assertNotIn(b'delete-btn', direct.data)
+
+        path = f'/{index_hash}/articles/{article_hash}'
+        action = {'X-DAA-Index-Action': 'delete'}
+        self.assertEqual(client.delete(path).status_code, 403)
+        self.assertEqual(client.delete('/' + '0' * 40 + '/articles/' + article_hash,
+                                       headers=action).status_code, 404)
+        self.assertTrue(article.exists())
+        self.assertEqual(client.delete(path, headers=action).status_code, 204)
+        self.assertFalse(article.exists())
+        self.assertEqual(client.get('/' + article_hash).status_code, 404)
+        self.assertNotIn(article_hash.encode(), client.get('/' + index_hash).data)
+        self.assertEqual(client.delete(path, headers=action).status_code, 404)
+
     def test_auth_and_path_restrictions(self):
         client = self.app.test_client()
         url = '/api/v1/articles/News/blocked.md'

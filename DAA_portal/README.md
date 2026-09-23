@@ -1,8 +1,14 @@
 # DAA Portal
 
 A self-hosted, Docker-based Markdown portal with private index and article URLs.
-Readers use those URLs; article management requires an authenticated API.
+Readers use those URLs; remote article management uses an authenticated API.
 DAA = Dynamic Articles Aggregator
+
+The private index page also has a Delete button beside each article. It asks
+for confirmation, then removes the article's Markdown file from the mounted
+content directory. Direct article pages have no delete control. The index URL
+itself grants this delete capability to anyone who has it, so keep that URL
+private. The separate management API still requires its bearer token.
 
 ## Deployment model
 
@@ -118,6 +124,7 @@ My use-case includes AI-generated Markdown articles written directly to the file
 | Default root `/` | Returns `204 No Content` with an empty body |
 | Unknown reader path | Returns `404 Not Found` with an empty body; DAA does not use NGINX's non-standard `444` |
 | Index URL | 40-char random hex, generated on first start and stored in `content/.index_secret` |
+| Index deletion | The index URL authorizes Delete buttons; confirmation removes the corresponding `.md` file |
 | Article URLs | Deterministic SHA-256 of the relative file path, truncated to 32 hex chars, stored in SQLite; the hash is not authentication |
 | Hidden files | `.index_secret` and `.mappings.db` can never be served over HTTP (rejected by extension check + hidden-file guard + never registered in the DB) |
 | Rate limiting | Nominally 240 requests / minute and 8 requests / second per reported client address, in-app and in-memory; not a hard security boundary |

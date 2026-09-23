@@ -480,6 +480,23 @@ def dispatch(h: str):
     )
 
 
+@app.route('/<string:index_hash>/articles/<string:article_hash>', methods=['DELETE'])
+def delete_from_index(index_hash: str, article_hash: str):
+    if not hmac.compare_digest(index_hash, get_index_hash()):
+        abort(404)
+    # A custom header prevents a third-party page from submitting a blind delete.
+    if request.headers.get('X-DAA-Index-Action') != 'delete':
+        abort(403)
+    rel_path = lookup(article_hash)
+    if rel_path is None:
+        abort(404)
+    article = _managed_article(rel_path)
+    if article is None or not article.is_file():
+        abort(404)
+    article.unlink()
+    return Response(status=204)
+
+
 @app.route('/<string:h>/download', methods=['GET'])
 def download(h: str):
     rel_path = lookup(h)
@@ -705,13 +722,15 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
 }
 .cat-articles { border-top: 1px solid var(--border); padding: 0.35rem 0; }
 .cat-articles.hidden { display: none; }
-.article-item { border-bottom: 1px solid rgba(41,46,66,0.4); }
+.article-item { display: flex; align-items: center; border-bottom: 1px solid rgba(41,46,66,0.4); }
 .article-item:last-child { border-bottom: none; }
 .article-link {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0.55rem 1.25rem 0.55rem 2.4rem;
+    flex: 1;
+    min-width: 0;
     transition: background 0.12s;
     gap: 1rem;
     color: var(--fg);
@@ -732,6 +751,18 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
     flex-shrink: 0;
     font-variant-numeric: tabular-nums;
 }
+.delete-btn {
+    margin-right: 1.25rem;
+    padding: 4px 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--red);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+.delete-btn:hover { border-color: var(--red); background: var(--bg-lift); }
+.delete-btn:disabled { opacity: 0.5; cursor: wait; }
 .no-results { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.9rem; }
 @media (max-width: 640px) {
     header { padding: 0.85rem 1rem; }
@@ -884,6 +915,29 @@ article a:hover { color: var(--accent-h); }
 # ── Index JS ──────────────────────────────────────────────────────────────────
 
 _INDEX_JS = r"""
+async function deleteArticle(btn) {
+    const item = btn.closest('.article-item');
+    const title = item.querySelector('.article-title').textContent;
+    if (!confirm('Permanently delete "' + title + '" and its Markdown file?')) return;
+    btn.disabled = true;
+    try {
+        const response = await fetch(window.location.pathname + '/articles/' +
+            encodeURIComponent(btn.dataset.hash), {
+            method: 'DELETE',
+            headers: {'X-DAA-Index-Action': 'delete'}
+        });
+        if (response.status !== 204) throw new Error('HTTP ' + response.status);
+        const category = item.closest('.category');
+        item.remove();
+        category.querySelector('.cat-count').textContent =
+            category.querySelectorAll('.article-item').length;
+        applyControls();
+    } catch (error) {
+        alert('Could not delete the article: ' + error.message);
+        btn.disabled = false;
+    }
+}
+
 function toggleCat(btn) {
     btn.classList.toggle('collapsed');
     btn.nextElementSibling.classList.toggle('hidden');
@@ -975,7 +1029,10 @@ def _render_index(cats: list[dict]) -> str:
                 f'<a class="article-link" href="/{escape(a["hash"])}" target="_blank" rel="noopener noreferrer">'
                 f'<span class="article-title">{escape(a["title"])}</span>'
                 f'<span class="article-date">{escape(a["date_disp"])}</span>'
-                f'</a></div>'
+                f'</a>'
+                f'<button class="delete-btn" type="button" data-hash="{a["hash"]}" '
+                f'aria-label="Delete {escape(a["title"])}" onclick="deleteArticle(this)">Delete</button>'
+                f'</div>'
             )
         cat_html += (
             f'<div class="category" data-cat="{escape(cat["name"])}">'
