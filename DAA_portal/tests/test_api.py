@@ -63,6 +63,45 @@ class ArticleApiTest(unittest.TestCase):
         self.assertNotIn(article_hash.encode(), client.get('/' + index_hash).data)
         self.assertEqual(client.delete(path, headers=action).status_code, 404)
 
+    def test_article_downloads_markdown_and_rendered_pdf(self):
+        from app import _pdf_url_fetcher, register
+
+        client = self.app.test_client()
+        source = ('# PDF Example\n\n> A quoted line\n\n'
+                  '```python\nprint("code block")\n```\n\n'
+                  '| Name | Value |\n| --- | --- |\n| One | Two |\n')
+        article = Path(self.temp.name, 'News/pdf-example.md')
+        article.parent.mkdir(exist_ok=True)
+        article.write_text(source, encoding='utf-8')
+        try:
+            article_hash = register('News/pdf-example.md')
+            page = client.get('/' + article_hash)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(b'Download as', page.data)
+            self.assertIn(b'PDF (.pdf)', page.data)
+            self.assertIn(b'/download/pdf', page.data)
+
+            markdown_file = client.get('/' + article_hash + '/download')
+            self.assertEqual(markdown_file.data, source.encode())
+            self.assertIn('pdf-example.md', markdown_file.headers['Content-Disposition'])
+            markdown_file.close()
+
+            pdf = client.get('/' + article_hash + '/download/pdf')
+            self.assertEqual(pdf.status_code, 200)
+            self.assertEqual(pdf.mimetype, 'application/pdf')
+            self.assertIn('pdf-example.pdf', pdf.headers['Content-Disposition'])
+            self.assertTrue(pdf.data.startswith(b'%PDF-'))
+            self.assertGreater(len(pdf.data), 1000)
+            client.set_cookie('daa-theme', 'matrix')
+            themed_pdf = client.get('/' + article_hash + '/download/pdf')
+            self.assertEqual(themed_pdf.data, pdf.data)
+            themed_pdf.close()
+            pdf.close()
+            with self.assertRaises(ValueError):
+                _pdf_url_fetcher('file:///content/.index_secret')
+        finally:
+            article.unlink()
+
     def test_auth_and_path_restrictions(self):
         client = self.app.test_client()
         url = '/api/v1/articles/News/blocked.md'

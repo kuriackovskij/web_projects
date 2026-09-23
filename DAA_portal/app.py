@@ -7,12 +7,15 @@ import hashlib
 import hmac
 import secrets
 import tempfile
+from io import BytesIO
 import markdown
 from datetime import datetime
 from html import escape
 from pathlib import Path
 from flask import Flask, abort, request, send_file, Response, jsonify
 from flask_limiter import Limiter
+from weasyprint import HTML
+from weasyprint.urls import URLFetcher
 
 CONTENT_DIR = os.environ.get('CONTENT_DIR', '/content')
 DB_PATH = os.path.join(CONTENT_DIR, '.mappings.db')
@@ -403,12 +406,18 @@ _THEME_OVERRIDES_CSS = """
 # Pygments code highlighting — monokai for dark themes, friendly for light
 try:
     from pygments.formatters import HtmlFormatter
-    _dark_pygs  = HtmlFormatter(style='monokai').get_style_defs('.highlight')
-    _light_sel  = ', '.join(f'[data-theme="{t}"] .highlight' for t in _LIGHT_IDS)
-    _light_pygs = HtmlFormatter(style='friendly').get_style_defs(_light_sel) if _light_sel else ''
+    _dark_sel = ':root:not([data-theme="github-light"]):not([data-theme="solarized-light"]) .highlight'
+    _dark_pygs = HtmlFormatter(style='monokai').get_style_defs(_dark_sel)
+    _light_pygs = ''.join(
+        HtmlFormatter(style='friendly').get_style_defs(
+            f'[data-theme="{tid}"] .highlight')
+        for tid in sorted(_LIGHT_IDS)
+    )
     PYGS_CSS = _dark_pygs + '\n' + _light_pygs
+    PDF_PYGS_CSS = HtmlFormatter(style='friendly').get_style_defs('.highlight')
 except ImportError:
     PYGS_CSS = ''
+    PDF_PYGS_CSS = ''
 
 
 # ── Shared JS ─────────────────────────────────────────────────────────────────
@@ -506,6 +515,38 @@ def download(h: str):
     if fpath is None or not os.path.isfile(fpath):
         abort(404)
     return send_file(fpath, as_attachment=True, download_name=os.path.basename(fpath))
+
+
+_pdf_data_fetcher = URLFetcher(allowed_protocols=('data',))
+
+
+def _pdf_url_fetcher(url: str):
+    """Only embedded images may be loaded while rendering article content."""
+    if not url.lower().startswith('data:image/'):
+        raise ValueError('External PDF resources are disabled')
+    return _pdf_data_fetcher(url)
+
+
+@app.route('/<string:h>/download/pdf', methods=['GET'])
+@limiter.limit('10 per minute')
+def download_pdf(h: str):
+    rel_path = lookup(h)
+    if rel_path is None:
+        abort(404)
+    fpath = _safe_path(rel_path)
+    if fpath is None or not os.path.isfile(fpath):
+        abort(404)
+    parts = rel_path.split('/', 1)
+    cat = parts[0] if len(parts) == 2 else ''
+    fname = parts[1] if len(parts) == 2 else rel_path
+    src = Path(fpath).read_text(encoding='utf-8')
+    date = datetime.fromtimestamp(os.stat(fpath).st_mtime).strftime('%d %b %Y')
+    html = _render_pdf(_make_title(fname), cat, date, md_to_html(src))
+    pdf = HTML(string=html, url_fetcher=_pdf_url_fetcher).write_pdf()
+    return send_file(
+        BytesIO(pdf), mimetype='application/pdf', as_attachment=True,
+        download_name=Path(fname).stem + '.pdf',
+    )
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -848,6 +889,35 @@ _ARTICLE_CSS = _BASE_CSS + """
     transition: all 0.15s;
 }
 .dl-btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.download-menu { position: relative; }
+.download-menu summary { list-style: none; cursor: pointer; }
+.download-menu summary::-webkit-details-marker { display: none; }
+.download-menu summary::after { content: '▾'; margin-left: 0.25rem; }
+.download-menu[open] summary::after { content: '▴'; }
+.download-options {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    z-index: 3;
+    min-width: 175px;
+    padding: 0.35rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+}
+.download-options a {
+    display: block;
+    padding: 0.45rem 0.65rem;
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font-size: 0.82rem;
+}
+.download-options a:hover, .download-options a:focus-visible {
+    background: var(--bg-lift);
+    color: var(--accent);
+    text-decoration: none;
+}
 
 /* Article typography */
 article {
@@ -944,6 +1014,108 @@ article a:hover { color: var(--accent-h); }
     article { padding: 1.25rem 1rem; }
     article h1 { font-size: 1.4rem; }
 }
+"""
+
+_PDF_CSS = """
+@page {
+    size: A4;
+    margin: 18mm 19mm 20mm;
+    @bottom-right {
+        content: counter(page);
+        color: #84909d;
+        font: 8pt 'DejaVu Sans', sans-serif;
+    }
+}
+* { box-sizing: border-box; }
+html { font: 10pt 'DejaVu Sans', sans-serif; color: #26323e; }
+body { margin: 0; background: #fff; }
+.page-wrap { width: 100%; }
+.article-meta-bar {
+    display: flex;
+    justify-content: space-between;
+    padding-bottom: 8pt;
+    margin-bottom: 18pt;
+    border-bottom: 1px solid #dce3e9;
+    color: #697786;
+    font-size: 8pt;
+}
+.meta-cat { color: #355f88; font-weight: 700; }
+.meta-cat::after { content: ' · '; color: #84909d; font-weight: 400; padding: 0 3pt; }
+article { line-height: 1.65; overflow-wrap: break-word; }
+article h1, article h2, article h3, article h4, article h5, article h6 {
+    color: #192735;
+    line-height: 1.25;
+    break-after: avoid;
+}
+article h1 { font-size: 21pt; margin: 0 0 12pt; }
+article h2 {
+    font-size: 14pt;
+    margin: 22pt 0 9pt;
+    padding-bottom: 5pt;
+    border-bottom: 1px solid #dce3e9;
+}
+article h3 { font-size: 11.5pt; margin: 17pt 0 7pt; }
+article h4, article h5, article h6 { font-size: 10pt; margin: 13pt 0 6pt; }
+article p { margin: 0 0 10pt; }
+article strong { color: #192735; }
+article a { color: #1b5b94; text-decoration: underline; }
+article ul, article ol { margin: 5pt 0 11pt 22pt; padding: 0; }
+article li { margin: 0 0 3pt; }
+article li > ul, article li > ol { margin-top: 3pt; margin-bottom: 4pt; }
+article blockquote {
+    margin: 13pt 0;
+    padding: 8pt 12pt;
+    border-left: 3pt solid #587fa3;
+    background: #f4f7fa;
+    color: #445464;
+    break-inside: avoid;
+}
+article blockquote p:last-child { margin-bottom: 0; }
+article code, article pre {
+    font-family: 'DejaVu Sans Mono', monospace;
+    font-size: 8.5pt;
+}
+article :not(pre) > code {
+    padding: 1pt 3pt;
+    border-radius: 2pt;
+    background: #eef2f6;
+    color: #9a3446;
+}
+article pre, .highlight {
+    margin: 12pt 0;
+    padding: 9pt 11pt;
+    border: 1px solid #dce3e9;
+    border-radius: 4pt;
+    background: #f5f7fa !important;
+    color: #26323e;
+    overflow: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+article pre code { padding: 0; background: none; color: inherit; white-space: inherit; }
+.highlight pre {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent !important;
+}
+article table { width: 100%; border-collapse: collapse; margin: 13pt 0; font-size: 9pt; }
+article th, article td { border: 1px solid #dce3e9; padding: 6pt 8pt; text-align: left; vertical-align: top; }
+article th { background: #edf2f6; color: #344454; font-weight: 700; }
+article tr:nth-child(even) td { background: #fafbfd; }
+article tr { break-inside: avoid; }
+article hr { border: 0; border-top: 1px solid #dce3e9; margin: 18pt 0; }
+article img { max-width: 100%; height: auto; }
+.toc {
+    margin: 12pt 0;
+    padding: 9pt 11pt;
+    border: 1px solid #dce3e9;
+    background: #f8fafc;
+    font-size: 9pt;
+}
+.toc .toctitle { font-weight: 700; margin-bottom: 4pt; }
+.toc ul { list-style: none; margin: 0; }
+.footnote { font-size: 8pt; color: #586675; }
 """
 
 
@@ -1210,7 +1382,8 @@ def _render_article(title: str, cat: str, date: str, html_body: str, article_has
     <div class="meta-right">
       <label for="theme-select" style="font-size:0.72rem;color:var(--fg-faint)">Theme</label>
       {_theme_select_html()}
-      <a class="dl-btn" href="/{escape(article_hash)}/download">
+      <details class="download-menu">
+      <summary class="dl-btn">
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
              fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
              stroke-linejoin="round">
@@ -1218,14 +1391,41 @@ def _render_article(title: str, cat: str, date: str, html_body: str, article_has
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
-        Download .md
-      </a>
+        Download as
+      </summary>
+      <div class="download-options">
+        <a href="/{escape(article_hash)}/download">Markdown (.md)</a>
+        <a href="/{escape(article_hash)}/download/pdf">PDF (.pdf)</a>
+      </div>
+      </details>
     </div>
   </div>
   <article>{html_body}</article>
 </div>
 <footer>By Aleks K</footer>
 <script>{_THEME_JS}</script>
+</body>
+</html>"""
+
+
+def _render_pdf(title: str, cat: str, date: str, html_body: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{escape(title)} — DAA</title>
+<style>{PDF_PYGS_CSS}{_PDF_CSS}</style>
+</head>
+<body>
+<div class="page-wrap">
+  <div class="article-meta-bar">
+    <div class="meta-left">
+      <span class="meta-cat">{escape(cat)}</span>
+      <span class="meta-date">{escape(date)}</span>
+    </div>
+  </div>
+  <article>{html_body}</article>
+</div>
 </body>
 </html>"""
 

@@ -3,3 +3,4 @@ flask-limiter==3.9.0
 markdown==3.7
 pygments==2.19.1
 gunicorn==23.0.0
+weasyprint==70.0

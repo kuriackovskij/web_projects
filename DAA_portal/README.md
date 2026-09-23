@@ -235,6 +235,19 @@ To share a direct link to someone:
 2. Right-click the article → **Copy link address**
 3. Send that URL — they see only that article, with no navigation to anything else
 
+### Download an article
+
+Open a direct article page and expand **Download as**. Choose **Markdown (.md)**
+for the original source file or **PDF (.pdf)** for a printable document. The
+Markdown link keeps its existing `/<article-hash>/download` URL; the PDF link is
+`/<article-hash>/download/pdf`. Anyone with the article link can use both.
+
+PDFs are generated on demand from the rendered Markdown. They use a consistent
+light, A4 print layout with headings, code blocks, quotations, tables, lists,
+and page numbers, regardless of the selected portal theme. Long code lines wrap
+to fit the page. Embedded data images can be included; the PDF renderer does
+not fetch external URLs or server files referenced by an article.
+
 ### Edit an article
 
 Edit the `.md` file directly on the filesystem:
