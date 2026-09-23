@@ -14,8 +14,13 @@ directory appear on the next index load without a rebuild or restart.
 
 Do not commit live content, `.index_secret`, `.mappings.db`, `.env`, backups, or
 credentials to this public repository. The committed welcome article is a dummy
-sample only. `.gitignore` and `.dockerignore` exclude runtime content; keep
-private data in the host bind mount, outside a Git checkout.
+sample only. The tracked `content/.index_secret.example` shows the one-line,
+40-hex-character format using an all-zero **dummy** value; it is not an active
+secret and must never be copied into `content/.index_secret` for a deployment.
+Let the app generate a fresh private index secret instead, or preserve the
+existing private one during migration. `.gitignore` and `.dockerignore`
+exclude runtime content; keep private data in the host bind mount, outside a
+Git checkout.
 
 ## Hermes article API
 
