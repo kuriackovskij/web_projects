@@ -247,6 +247,15 @@ The old URL stops working. The new URL appears on the index on the next load.
 
 ### Remove an article
 
+On the private index page, select **Delete** beside the article and confirm.
+DAA deletes the corresponding `.md` file from the mounted content directory and
+removes its row from the list. The article's direct URL then returns 404. There
+is no Delete button on a direct article page and no undo in the browser; restore
+from a content backup if needed. Anyone with the private index URL can use these
+buttons, so share direct article links instead of the index URL.
+
+The same file can be removed directly on the host:
+
 ```bash
 rm ~/portal/content/Photography/paris-trip.md
 ```
