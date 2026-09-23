@@ -4,16 +4,20 @@ This is the complete client-facing contract for the current article-management
 API. It describes the behavior implemented in `app.py`, not proposed features.
 The API manages UTF-8 Markdown files in a private content directory. A human
 or agent can also use `clients/daa_client.py`, which implements the same five
-commands and manages the SSH tunnel automatically.
+commands over HTTPS.
 
 ## Where to send requests
 
-The public reader URL is **not** an API base URL: the public reverse proxy
-blocks `/api/`. The backend speaks plain HTTP on its configured bind address
-and port 6898. Remote clients should connect through an SSH local forward, so
-the token and article content travel inside the encrypted SSH connection.
+The public reader site on port 443 is **not** an API base URL: it blocks
+`/api/`, including for readers admitted through an internet access gate. The
+article API has a separate HTTPS listener reachable only from the trusted LAN
+or approved Tailnet subnet route. For this deployment its origin is
+`https://daa.aleksk.eu:8443`. A new client must resolve `daa.aleksk.eu` to
+the internal proxy address while on LAN/Tailnet. Public DNS and internet
+access to the reader site do not grant API access. Do not disable TLS
+certificate verification to work around a DNS or routing problem.
 
-The bundled `daa-client` starts and closes that forward for each command:
+The bundled `daa-client` sends requests directly to that HTTPS origin:
 
 ```text
 daa-client list
@@ -23,22 +27,12 @@ daa-client move News/example.md Research/renamed.md
 daa-client delete Research/renamed.md
 ```
 
-For a different HTTP client, start an equivalent forward in a separate
-terminal. Replace every angle-bracketed value with your own deployment
-details; none of these are live usernames, paths, addresses, or keys:
-
-```bash
-ssh -N -L 127.0.0.1:18998:<backend-bind-address>:6898 \
-  -i /path/to/private-article-key \
-  -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-  -o ExitOnForwardFailure=yes <restricted-ssh-user>@<portal-ssh-host>
-```
-
-Here, `<backend-bind-address>:6898` is the destination **as seen by the SSH
-server**; it must match that key's `permitopen` restriction. Keep this SSH
-session running while making HTTP requests to `http://127.0.0.1:18998` on the
-client machine, then close it. Verify the SSH host key before first use. Do
-not send the bearer token over unencrypted LAN HTTP or to the public site.
+The proxy terminates TLS and forwards requests to the portal backend on the
+LAN. The backend's direct HTTP port remains available on that LAN by operator
+choice; clients should use the HTTPS origin above so the client-to-proxy leg
+is encrypted. The API is protected by both the network boundary and a bearer
+token. An optional path containing a secret is **not** used as an access
+control layer; do not put the API token or `.index_secret` value in a URL.
 
 ## Authentication and request conventions
 
@@ -50,37 +44,29 @@ Authorization: Bearer <api-token>
 
 `<api-token>` is the same random, at-least-32-character value configured as
 `DAA_API_TOKEN` in the portal's protected `.env` and the client's protected
-config. The bundled client reads `~/.config/daa/client.env` (mode 0600):
+config. The bundled client reads `~/.config/daa/client.env` (mode 0600), or
+the file named by `DAA_CLIENT_CONFIG`:
 
 ```dotenv
 DAA_API_TOKEN=<same-token-as-portal-env>
-DAA_SSH_DESTINATION=<restricted-ssh-user>@<portal-ssh-host>
-DAA_FORWARD_TARGET=<backend-bind-address>:6898
-DAA_SSH_IDENTITY=/path/to/private-article-key
+DAA_API_BASE_URL=https://daa.aleksk.eu:8443
 ```
 
-The dedicated SSH private key stays on the client machine. Only its public
-key goes in the portal host's `authorized_keys`, restricted to the exact
-backend target and without shell access. Never commit the token, private key,
+For another agent VM, install the helper and provision that VM's own protected
+client config; no SSH key or tunnel is needed. The client requires a bare
+`https://` origin, verifies the server certificate and hostname, disables
+environment HTTP proxies, and refuses redirects. Never commit the token,
 client config, `.env`, or real articles. Do not put a real token directly in
-shell commands, shell history, an article, or a URL. The SSH key and API token
-are separate credentials; neither replaces the other.
+shell commands, shell history, an article, or a URL.
 
 For a new deployment, generate a random token with at least 32 characters
 (for example, `openssl rand -hex 32`) and put the identical value in the
 portal's protected `.env` as `DAA_API_TOKEN=<token>` and in the client config
-above. Restrict both files to their respective service/agent account. A
-generic `authorized_keys` line for the dedicated article key is:
-
-```text
-restrict,port-forwarding,permitopen="<backend-bind-address>:6898",command="/bin/false" ssh-ed25519 <public-key> <comment>
-```
-
-The `permitopen` target must match `DAA_FORWARD_TARGET` exactly. The helper
-requires Python 3 and OpenSSH; it can be run from a source checkout as
+above. Restrict both files to their respective service/agent account. The
+helper requires Python 3; it can be run from a source checkout as
 `python3 clients/daa_client.py <command> ...` or installed as `daa-client`.
 
-All paths below are relative to the tunnel's HTTP base URL. All API responses
+All paths below are relative to the private HTTPS origin. All API responses
 set `Cache-Control: no-store`. Responses are not guaranteed to have a JSON
 body unless the success response below explicitly says so.
 
@@ -228,7 +214,7 @@ Success is `204 No Content`, with no response body. A missing file returns
 again. The empty category directory may remain. The old reader URL stops
 working immediately even though its hash-to-path SQLite row can remain.
 
-## Copyable curl examples through a manual tunnel
+## Copyable curl examples over private HTTPS
 
 To keep the real token out of the process command line, put this line in a
 private curl config file (mode 0600) on the client machine:
@@ -238,10 +224,11 @@ header = "Authorization: Bearer <api-token>"
 ```
 
 Replace the placeholder inside that file only, and never commit the file.
-With the SSH forward above running, set these non-secret shell variables:
+From a LAN/Tailnet client with internal DNS resolution, set these non-secret
+shell variables:
 
 ```bash
-DAA_BASE_URL=http://127.0.0.1:18998
+DAA_BASE_URL=https://daa.aleksk.eu:8443
 DAA_CURL_CONFIG=/path/to/private-curl.conf
 ```
 
@@ -272,8 +259,8 @@ curl --config "$DAA_CURL_CONFIG" --include --request DELETE \
   "$DAA_BASE_URL/api/v1/articles/News/example.md"
 ```
 
-The bundled `daa-client` is preferable for automation because it handles the
-SSH lifecycle and token loading without a separate curl config. Its `get`
+The bundled `daa-client` is preferable for automation because it loads the
+protected token and validates HTTPS without a separate curl config. Its `get`
 command refuses to overwrite an existing local destination. Its `put` command
 reads the source file and prints the JSON result; `list` prints JSON;
 `move` prints the JSON result; `delete` prints `deleted` on success. A failed

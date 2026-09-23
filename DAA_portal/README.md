@@ -28,55 +28,34 @@ For the complete request/response contract, curl examples for every operation,
 status codes, path rules, and limitations, see [API.md](API.md). This README
 covers deployment and the bundled client setup.
 
-Hermes invokes `daa-client`; it does not have to manage a tunnel itself. The
-`clients/daa_client.py` program starts `ssh -N -L` with a temporary port bound
-to `127.0.0.1` on the agent host, waits for the forward to become ready, then
-sends its HTTP request with an `Authorization: Bearer` header through that
-forward. It closes the SSH process when the command finishes. The SSH session
-encrypts the API request, token, and article body in transit; the bearer token
-is a separate application-level authorization check. The public reverse proxy
-must block `/api/`.
+Hermes invokes `daa-client`, which sends bearer-authenticated requests over
+HTTPS to an internal-only API listener. No SSH tunnel or SSH key is required.
+The public reader listener on port 443 continues to block `/api/`, even for
+readers admitted through an internet access gate. This deployment's API
+origin is `https://daa.aleksk.eu:8443`, available only through LAN or an
+approved Tailnet subnet route. Tailnet clients need internal DNS resolution
+for `daa.aleksk.eu`; do not disable TLS verification to work around DNS.
 
 The API token has two copies: `DAA_API_TOKEN` in a protected `.env` beside the
 portal's `docker-compose.yml`, and the same value in the agent host's
-`~/.config/daa/client.env` (mode 0600). The client's SSH private key is a
-separate file on the agent host, selected by `DAA_SSH_IDENTITY` in that config;
-only its public key goes in the portal host's SSH `authorized_keys`. Neither
-the token nor the private key belongs in Git, an article, a skill, or a command
-line. This article-management key is separate from any GitHub deploy key on
-the portal host.
+`~/.config/daa/client.env` (mode 0600), or the path named by
+`DAA_CLIENT_CONFIG`. The client config needs only the HTTPS origin and token;
+the same setup works on another LAN/Tailnet VM. Never put the token in Git,
+an article, a skill, a URL, or a command line.
 
 Example agent config (placeholders only; do not commit a real copy):
 
 ```dotenv
 DAA_API_TOKEN=<same-random-token-as-portal-env>
-DAA_SSH_DESTINATION=<restricted-ssh-user>@<portal-ssh-host>
-DAA_FORWARD_TARGET=<portal-backend-bind-address>:6898
-DAA_SSH_IDENTITY=/home/<agent-user>/.ssh/<dedicated-article-key>
+DAA_API_BASE_URL=https://daa.aleksk.eu:8443
 ```
 
-`DAA_FORWARD_TARGET` is the address **as reached from the portal host**. It
-must exactly match the target allowed by `permitopen` in the SSH public-key
-restriction. For a loopback-only portal binding, use `127.0.0.1:6898`; for a
-LAN-bound backend, use its bind address and port. Install the helper on the
-agent host as `daa-client` (or invoke the script by path), and ensure the SSH
-server's host key has been verified in that host's `known_hosts` file. The
-client enforces strict host-key checking and noninteractive SSH authentication.
-
-Create a dedicated SSH key for article management and grant its public key
-only the needed forward, without a shell. A generic `authorized_keys` entry
-looks like this (replace the target with the actual backend bind address):
-
-```text
-restrict,port-forwarding,permitopen="<portal-backend-bind-address>:6898",command="/bin/false" ssh-ed25519 <public-key> <comment>
-```
-
-Keep the private key and client config readable only by the agent's account
-(for example, mode 0600), and keep the portal `.env` readable only by its
-administrator. The API returns `401` for missing/invalid tokens and fails
-closed with `503` if no token is configured. A stolen SSH key alone still
-needs the API token; a stolen token alone still needs network access to the
-backend. Rotate both independently if either may have been exposed.
+Keep the client config readable only by its agent account (mode 0600), and
+keep the portal `.env` readable only by its administrator. The client verifies
+the server certificate/hostname, refuses redirects, and bypasses environment
+HTTP proxies. The API returns `401` for missing/invalid tokens and fails
+closed with `503` if no token is configured. A stolen token also needs access
+to the private API network. Rotate the token if it may have been exposed.
 
 ```bash
 daa-client list
@@ -95,17 +74,18 @@ The corresponding HTTP endpoints are `GET /api/v1/articles` and `GET`, `PUT`,
 `POST /api/v1/articles/<Category>/<filename>.md/move`; `PUT` requires
 `Content-Type: text/markdown` and has a 1 MiB body limit. Only one category
 level is accepted. Existing direct filesystem writes on the portal host continue to
-work. Do not send the bearer token to the plain HTTP LAN endpoint; use the
-SSH-backed client.
+work. Pluto terminates HTTPS and forwards to the portal backend over the LAN.
+Per the deployment policy, the portal host's existing direct LAN HTTP port remains
+unchanged; clients should use the private HTTPS origin, not that port.
 
 For a new deployment, generate a random 32-byte or longer token and place it
 as `DAA_API_TOKEN=<value>` in a protected `.env` beside `docker-compose.yml`.
 The application runs as UID/GID 10001, so the private content directory must
 be writable by that identity. Set `DAA_BIND_IP` in the protected `.env` for a
 LAN binding; the Compose default is loopback. The helper additionally needs
-`DAA_SSH_DESTINATION`, `DAA_FORWARD_TARGET`, and `DAA_SSH_IDENTITY` in its
-protected client config. Grant its SSH key port forwarding only to the portal
-backend, with no shell access. Block `/api/` at any public reverse proxy.
+`DAA_API_BASE_URL` in its protected client config. Block `/api/` on the public
+listener. Put the private HTTPS listener on a LAN-only interface/port, deny
+non-LAN sources there, and do not forward that port from the internet.
 
 ### Cutover and recovery checks
 
@@ -332,6 +312,9 @@ server {
     # Additional rate limiting at the nginx layer (optional but recommended)
     # limit_req zone=portal burst=20 nodelay;
 
+    # Public reader ingress must never forward article-management calls.
+    location ^~ /api/ { return 404; }
+
     location / {
         proxy_pass         http://PORTAL_SERVER_IP:6898;
         proxy_set_header   Host              $host;
@@ -343,6 +326,27 @@ server {
         # Prevent nginx from buffering large markdown responses
         proxy_buffering    off;
     }
+}
+
+# Separate listener: bind only to the proxy's LAN address. Never forward this
+# port from the internet. Approved Tailnet subnet-route traffic must arrive
+# from the trusted LAN range (the usual SNAT setup).
+server {
+    listen PORTAL_PROXY_LAN_IP:8443 ssl;
+    server_name yourdomain.com;
+    ssl_certificate     /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    allow TRUSTED_LAN_CIDR;
+    deny all;
+
+    location ^~ /api/v1/ {
+        proxy_pass http://PORTAL_SERVER_IP:6898;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+    location / { return 404; }
 }
 ```
 
@@ -359,43 +363,23 @@ sudo certbot --nginx -d yourdomain.com
 
 ---
 
-## Firewall (UFW)
+## Network boundary
 
-The Compose file can bind the portal to a configured LAN address. If an
-upstream proxy is added, explicitly restrict traffic to its source address.
-Docker-published ports may bypass ordinary UFW input rules, so verify access
-from a second host and use Docker's forwarding firewall chain when needed.
+The deployed API listener is on the reverse proxy's LAN address and is
+allowed only from the trusted LAN CIDR by both proxy access rules and the
+proxy host firewall. Only reader port 443 is forwarded from the internet;
+the public listener always returns 404 for `/api/`, even after IP-Beamer
+admits a reader. Verify the private listener from a LAN/Tailnet client and
+verify the public URL's `/api/` is still blocked. Tailnet clients must have
+the approved subnet route and internal DNS resolution for the certificate
+hostname.
 
-Replace `NGINX_SERVER_IP` with the actual IP of the machine running nginx.
-
-```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow ssh
-
-# Allow only the nginx server to reach the portal on port 6898
-sudo ufw allow from NGINX_SERVER_IP to any port 6898 proto tcp
-
-sudo ufw enable
-sudo ufw status
-```
-
-Expected output for port 6898:
-```
-6898/tcp        ALLOW IN    NGINX_SERVER_IP
-```
-
-To verify after enabling:
-```bash
-# From the nginx host — should get a response
-curl -s -o /dev/null -w "%{http_code}" http://PORTAL_SERVER_IP:6898/
-
-# From any other host — should time out or be refused
-curl --connect-timeout 3 http://PORTAL_SERVER_IP:6898/
-```
-
-Do not disable Docker's iptables integration on a shared host to implement
-this restriction; that would affect unrelated containers.
+The portal backend port 6898 remains LAN-bound and unchanged in this
+deployment, per operator choice. It is plain HTTP, so management clients
+should use the private HTTPS proxy address. A stricter backend firewall is
+an optional future change, not a prerequisite for this setup. Docker-published
+ports may bypass ordinary UFW input rules, so do not assume a UFW rule alone
+protects a published backend.
 
 ---
 

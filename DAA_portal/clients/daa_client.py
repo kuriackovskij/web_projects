@@ -1,28 +1,44 @@
 #!/usr/bin/env python3
-"""Hermes CLI for DAA article management through a restricted SSH tunnel."""
+"""DAA article-management CLI over a private HTTPS API."""
 import argparse
 import json
 import os
-import socket
-import subprocess
+import ssl
+import stat
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-CONFIG = Path.home() / '.config/daa/client.env'
+CONFIG = Path(os.environ.get('DAA_CLIENT_CONFIG',
+                             Path.home() / '.config/daa/client.env'))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward the bearer token to a redirect destination."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
 
 
 def settings():
+    if stat.S_IMODE(CONFIG.stat().st_mode) & 0o077:
+        raise RuntimeError('client config must not be readable by group or others')
     values = dict(line.split('=', 1) for line in CONFIG.read_text(encoding='ascii').splitlines()
                   if line and not line.startswith('#') and '=' in line)
     if len(values.get('DAA_API_TOKEN', '')) < 32:
         raise RuntimeError('DAA API credential is missing')
-    for name in ('DAA_SSH_DESTINATION', 'DAA_FORWARD_TARGET', 'DAA_SSH_IDENTITY'):
-        if not values.get(name):
-            raise RuntimeError(f'{name} is missing from client config')
+    base = values.get('DAA_API_BASE_URL', '').rstrip('/')
+    try:
+        parsed = urllib.parse.urlsplit(base)
+        parsed.port  # Invalid ports must fail during config validation.
+    except ValueError as exc:
+        raise RuntimeError('DAA_API_BASE_URL is invalid') from exc
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path or parsed.query or parsed.fragment):
+        raise RuntimeError('DAA_API_BASE_URL must be a bare HTTPS origin')
+    values['DAA_API_BASE_URL'] = base
     return values
 
 
@@ -42,28 +58,13 @@ def main():
     args = parser.parse_args()
     config = settings()
 
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    tunnel = subprocess.Popen([
-        'ssh', '-N', '-L', f'127.0.0.1:{port}:{config["DAA_FORWARD_TARGET"]}',
-        '-i', config['DAA_SSH_IDENTITY'], '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
-        '-o', 'StrictHostKeyChecking=yes', '-o', 'ExitOnForwardFailure=yes',
-        '-o', 'ConnectTimeout=10', config['DAA_SSH_DESTINATION'],
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    base = config['DAA_API_BASE_URL']
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        NoRedirect(),
+    )
     try:
-        base = f'http://127.0.0.1:{port}'
-        for _ in range(50):
-            if tunnel.poll() is not None:
-                raise RuntimeError('SSH tunnel failed: ' + tunnel.stderr.read().decode().strip())
-            try:
-                urllib.request.urlopen(base + '/', timeout=0.2)
-                break
-            except urllib.error.URLError:
-                time.sleep(0.1)
-        else:
-            raise RuntimeError('SSH tunnel did not become ready')
-
         path = '/api/v1/articles'
         if args.command != 'list':
             path += '/' + urllib.parse.quote(args.article, safe='/')
@@ -81,24 +82,17 @@ def main():
             headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(base + path, data=data,
                                          headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with opener.open(request, timeout=30) as response:
             if args.command == 'get':
                 target = Path(args.file)
-                if target.exists():
-                    raise RuntimeError('destination already exists')
-                target.write_bytes(response.read())
+                with target.open('xb') as output:
+                    output.write(response.read())
             elif args.command != 'delete':
                 print(json.dumps(json.load(response), ensure_ascii=False))
             else:
                 print('deleted')
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f'DAA API returned HTTP {exc.code}') from exc
-    finally:
-        tunnel.terminate()
-        try:
-            tunnel.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            tunnel.kill()
 
 
 if __name__ == '__main__':
