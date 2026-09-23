@@ -756,12 +756,16 @@ main { flex: 1; max-width: 980px; width: 100%; margin: 0 auto; padding: 1.5rem 1
     padding: 4px 9px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: none;
-    color: var(--red);
+    background: var(--bg-surface);
+    color: var(--fg-muted);
     font-size: 0.75rem;
     cursor: pointer;
 }
-.delete-btn:hover { border-color: var(--red); background: var(--bg-lift); }
+.delete-btn:hover, .delete-btn:focus-visible {
+    border-color: var(--accent);
+    background: var(--bg-lift);
+    color: var(--accent);
+}
 .delete-btn:disabled { opacity: 0.5; cursor: wait; }
 .no-results { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.9rem; }
 @media (max-width: 640px) {
