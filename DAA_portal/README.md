@@ -19,11 +19,55 @@ private data in the host bind mount, outside a Git checkout.
 
 ## Hermes article API
 
-The `clients/daa_client.py` helper carries API calls through a restricted SSH
-port forward and reads its bearer token and connection details from a mode-0600
-file at `~/.config/daa/client.env`. No API credential or
-article content is sent over unencrypted LAN HTTP. The API returns `401` for
-missing/invalid tokens and fails closed with `503` if no token is configured.
+Hermes invokes `daa-client`; it does not have to manage a tunnel itself. The
+`clients/daa_client.py` program starts `ssh -N -L` with a temporary port bound
+to `127.0.0.1` on the agent host, waits for the forward to become ready, then
+sends its HTTP request with an `Authorization: Bearer` header through that
+forward. It closes the SSH process when the command finishes. The SSH session
+encrypts the API request, token, and article body in transit; the bearer token
+is a separate application-level authorization check. The public reverse proxy
+must block `/api/`.
+
+The API token has two copies: `DAA_API_TOKEN` in a protected `.env` beside the
+portal's `docker-compose.yml`, and the same value in the agent host's
+`~/.config/daa/client.env` (mode 0600). The client's SSH private key is a
+separate file on the agent host, selected by `DAA_SSH_IDENTITY` in that config;
+only its public key goes in the portal host's SSH `authorized_keys`. Neither
+the token nor the private key belongs in Git, an article, a skill, or a command
+line. This article-management key is separate from any GitHub deploy key on
+the portal host.
+
+Example agent config (placeholders only; do not commit a real copy):
+
+```dotenv
+DAA_API_TOKEN=<same-random-token-as-portal-env>
+DAA_SSH_DESTINATION=<restricted-ssh-user>@<portal-ssh-host>
+DAA_FORWARD_TARGET=<portal-backend-bind-address>:6898
+DAA_SSH_IDENTITY=/home/<agent-user>/.ssh/<dedicated-article-key>
+```
+
+`DAA_FORWARD_TARGET` is the address **as reached from the portal host**. It
+must exactly match the target allowed by `permitopen` in the SSH public-key
+restriction. For a loopback-only portal binding, use `127.0.0.1:6898`; for a
+LAN-bound backend, use its bind address and port. Install the helper on the
+agent host as `daa-client` (or invoke the script by path), and ensure the SSH
+server's host key has been verified in that host's `known_hosts` file. The
+client enforces strict host-key checking and noninteractive SSH authentication.
+
+Create a dedicated SSH key for article management and grant its public key
+only the needed forward, without a shell. A generic `authorized_keys` entry
+looks like this (replace the target with the actual backend bind address):
+
+```text
+restrict,port-forwarding,permitopen="<portal-backend-bind-address>:6898",command="/bin/false" ssh-ed25519 <public-key> <comment>
+```
+
+Keep the private key and client config readable only by the agent's account
+(for example, mode 0600), and keep the portal `.env` readable only by its
+administrator. The API returns `401` for missing/invalid tokens and fails
+closed with `503` if no token is configured. A stolen SSH key alone still
+needs the API token; a stolen token alone still needs network access to the
+backend. Rotate both independently if either may have been exposed.
 
 ```bash
 daa-client list
