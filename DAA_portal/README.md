@@ -19,6 +19,10 @@ private data in the host bind mount, outside a Git checkout.
 
 ## Hermes article API
 
+For the complete request/response contract, curl examples for every operation,
+status codes, path rules, and limitations, see [API.md](API.md). This README
+covers deployment and the bundled client setup.
+
 Hermes invokes `daa-client`; it does not have to manage a tunnel itself. The
 `clients/daa_client.py` program starts `ssh -N -L` with a temporary port bound
 to `127.0.0.1` on the agent host, waits for the forward to become ready, then
