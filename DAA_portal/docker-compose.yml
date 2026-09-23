@@ -1,15 +1,15 @@
 services:
   portal:
     build: .
-    # Bind to loopback only — reachable by the reverse proxy on this host
-    # but not directly from the network.
+    # LAN UI; Hermes uses an SSH tunnel for authenticated API calls.
     ports:
-      - "6898:8080"
+      - "${DAA_BIND_IP:-127.0.0.1}:6898:8080"
     volumes:
       - ./content:/content
     restart: unless-stopped
     environment:
       - CONTENT_DIR=/content
+      - DAA_API_TOKEN=${DAA_API_TOKEN:?Set DAA_API_TOKEN in the protected .env file}
     read_only: false
     security_opt:
       - no-new-privileges:true

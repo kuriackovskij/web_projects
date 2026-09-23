@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 
+RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin daa
+USER daa
+
 ENV CONTENT_DIR=/content
 
 EXPOSE 8080

@@ -4,12 +4,14 @@ from __future__ import annotations
 import os
 import sqlite3
 import hashlib
+import hmac
 import secrets
+import tempfile
 import markdown
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from flask import Flask, abort, request, send_file, Response
+from flask import Flask, abort, request, send_file, Response, jsonify
 from flask_limiter import Limiter
 
 CONTENT_DIR = os.environ.get('CONTENT_DIR', '/content')
@@ -17,7 +19,7 @@ DB_PATH = os.path.join(CONTENT_DIR, '.mappings.db')
 INDEX_FILE = os.path.join(CONTENT_DIR, '.index_secret')
 
 app = Flask(__name__, static_folder=None)
-app.config['MAX_CONTENT_LENGTH'] = 1
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -57,6 +59,8 @@ def _security_headers(response: Response) -> Response:
     h['Content-Security-Policy'] = _CSP
     h['Permissions-Policy'] = 'geolocation=(), camera=(), microphone=()'
     h.pop('Server', None)
+    if request.path.startswith('/api/'):
+        h['Cache-Control'] = 'no-store'
     return response
 
 
@@ -146,6 +150,7 @@ def scan() -> list[dict]:
                 continue
             dt = datetime.fromtimestamp(ts)
             articles.append({
+                'path': rel,
                 'title': _make_title(fname),
                 'hash': h,
                 'ts': ts,
@@ -171,6 +176,87 @@ def _safe_path(rel_path: str) -> str | None:
     if not resolved.startswith(base + os.sep):
         return None
     return resolved
+
+
+def _managed_article(rel_path: str) -> Path | None:
+    """Only a regular Markdown file one level below a real category directory."""
+    parts = rel_path.split('/')
+    if (len(parts) != 2 or any(not p or p in ('.', '..') or p.startswith('.')
+                              or '\\' in p or '\x00' in p for p in parts)
+            or not parts[1].lower().endswith('.md')):
+        return None
+    base = Path(CONTENT_DIR)
+    category = base / parts[0]
+    article = category / parts[1]
+    if category.is_symlink() or article.is_symlink():
+        return None
+    if category.exists() and not category.is_dir():
+        return None
+    if article.exists() and not article.is_file():
+        return None
+    return article
+
+
+def _api_authorized() -> bool:
+    token = os.environ.get('DAA_API_TOKEN', '')
+    if len(token) < 32:
+        abort(503)
+    supplied = request.headers.get('Authorization', '')
+    if not supplied.startswith('Bearer ') or not hmac.compare_digest(
+        supplied[7:].encode(), token.encode()
+    ):
+        abort(401)
+    return True
+
+
+@app.route('/api/v1/articles', methods=['GET'])
+def api_list_articles():
+    _api_authorized()
+    articles = []
+    for category in scan():
+        for item in category['articles']:
+            articles.append({'path': item['path'],
+                             'hash': item['hash']})
+    return jsonify({'articles': articles})
+
+
+@app.route('/api/v1/articles/<path:rel_path>', methods=['GET', 'PUT', 'DELETE'])
+def api_article(rel_path: str):
+    _api_authorized()
+    article = _managed_article(rel_path)
+    if article is None:
+        abort(400)
+    if request.method == 'GET':
+        if not article.is_file():
+            abort(404)
+        return Response(article.read_text(encoding='utf-8'), mimetype='text/markdown')
+    if request.method == 'DELETE':
+        if not article.is_file():
+            abort(404)
+        article.unlink()
+        return Response(status=204)
+    if request.mimetype != 'text/markdown':
+        abort(415)
+    try:
+        body = request.get_data().decode('utf-8')
+    except UnicodeDecodeError:
+        abort(400)
+    existed = article.is_file()
+    article.parent.mkdir(mode=0o750, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=article.parent, prefix='.daa-',
+                                         delete=False) as tmp:
+            tmp_path = tmp.name
+            tmp.write(body)
+        os.chmod(tmp_path, 0o640)
+        os.replace(tmp_path, article)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+    article_hash = register(rel_path)
+    return jsonify({'path': rel_path, 'hash': article_hash}), 200 if existed else 201
 
 
 # ── Markdown ──────────────────────────────────────────────────────────────────

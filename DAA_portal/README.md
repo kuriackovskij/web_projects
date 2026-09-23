@@ -1,8 +1,64 @@
 # DAA Portal
 
-A self-hosted, Docker-based markdown portal with obfuscated URLs and no authentication.
-All URLs are hard to guess; only the index URL and direct article links are usable.
+A self-hosted, Docker-based Markdown portal with private index and article URLs.
+Readers use those URLs; article management requires an authenticated API.
 DAA = Dynamic Articles Aggregator
+
+## Deployment model
+
+The reader site is `https://daa.aleksk.eu`. Private runtime content is a host
+bind mount. Keeping `.index_secret` and `.mappings.db` with the Markdown files
+preserves existing index and article URLs when moving the service. Articles
+added directly as `<Category>/<filename>.md` under the mounted content
+directory appear on the next index load without a rebuild or restart.
+
+Do not commit live content, `.index_secret`, `.mappings.db`, `.env`, backups, or
+credentials to this public repository. The committed welcome article is a dummy
+sample only. `.gitignore` and `.dockerignore` exclude runtime content; keep
+private data in the host bind mount, outside a Git checkout.
+
+## Hermes article API
+
+The `clients/daa_client.py` helper carries API calls through a restricted SSH
+port forward and reads its bearer token and connection details from a mode-0600
+file at `~/.config/daa/client.env`. No API credential or
+article content is sent over unencrypted LAN HTTP. The API returns `401` for
+missing/invalid tokens and fails closed with `503` if no token is configured.
+
+```bash
+daa-client list
+daa-client put News/example.md /path/to/local/article.md
+daa-client get News/example.md /path/to/new-local-copy.md
+daa-client delete News/example.md
+```
+
+`put` creates or replaces a Markdown article and returns its stable path hash.
+The corresponding HTTP endpoints are `GET /api/v1/articles` and `GET`, `PUT`,
+`DELETE /api/v1/articles/<Category>/<filename>.md`; `PUT` requires
+`Content-Type: text/markdown` and has a 1 MiB body limit. Only one category
+level is accepted. Existing direct filesystem writes on the portal host continue to
+work. Do not send the bearer token to the plain HTTP LAN endpoint; use the
+SSH-backed client.
+
+For a new deployment, generate a random 32-byte or longer token and place it
+as `DAA_API_TOKEN=<value>` in a protected `.env` beside `docker-compose.yml`.
+The application runs as UID/GID 10001, so the private content directory must
+be writable by that identity. Set `DAA_BIND_IP` in the protected `.env` for a
+LAN binding; the Compose default is loopback. The helper additionally needs
+`DAA_SSH_DESTINATION`, `DAA_FORWARD_TARGET`, and `DAA_SSH_IDENTITY` in its
+protected client config. Grant its SSH key port forwarding only to the portal
+backend, with no shell access. Block `/api/` at any public reverse proxy.
+
+### Cutover and recovery checks
+
+Before a migration, stop writes, archive the entire private content tree, and
+compare a sorted per-file hash manifest on source and target. The root endpoint
+should return HTTP 204; the private index should render the expected article
+count, and the helper's `list` command should enumerate live paths.
+For recovery, stop the container before restoring the archived content
+tree, preserve the index secret and mapping database together, then restart and
+verify the index and a direct article URL. Never publish the archive or its
+contents to Git.
 
 ## Scope
 Markdown files representer as website without coding and without working with html.
@@ -13,7 +69,7 @@ Markdown files representer as website without coding and without working with ht
 
 ## Use-cases
 Might be plenty of use-cases like hosting a simple website, blog etc
-My use-case - AI Agent generated content without any API or other whistles, just simple md file generation and its placement in the filesystem.
+My use-case includes AI-generated Markdown articles written directly to the filesystem or published remotely through the authenticated API.
 
 ---
 
@@ -27,7 +83,7 @@ My use-case - AI Agent generated content without any API or other whistles, just
 | Hidden files | `.index_secret` and `.mappings.db` can never be served over HTTP (rejected by extension check + hidden-file guard + never registered in the DB) |
 | Rate limiting | 240 requests / minute · 8 requests / second per IP (in-app, before the proxy) |
 | Security headers | `noindex`, `nofollow`, `noarchive`, strict CSP, no `Server` header |
-| Port binding | Bound to `0.0.0.0:6898` — UFW restricts access to the nginx server's IP only |
+| Port binding | Configurable via `DAA_BIND_IP`; restrict upstream network access separately from application auth |
 
 Brute-forcing article paths: at 240 req/min the SHA-256 space (2¹²⁸ paths) would take longer than the age of the universe.
 
@@ -247,8 +303,10 @@ sudo certbot --nginx -d yourdomain.com
 
 ## Firewall (UFW)
 
-The nginx reverse proxy is on a **separate host**, so the app binds on all interfaces (`0.0.0.0:6898`).
-Use UFW to whitelist only the nginx server's IP — everything else is denied.
+The Compose file can bind the portal to a configured LAN address. If an
+upstream proxy is added, explicitly restrict traffic to its source address.
+Docker-published ports may bypass ordinary UFW input rules, so verify access
+from a second host and use Docker's forwarding firewall chain when needed.
 
 Replace `NGINX_SERVER_IP` with the actual IP of the machine running nginx.
 
@@ -260,7 +318,6 @@ sudo ufw allow ssh
 # Allow only the nginx server to reach the portal on port 6898
 sudo ufw allow from NGINX_SERVER_IP to any port 6898 proto tcp
 
-# Do NOT open port 6898 to the world — the above rule is the only one for it
 sudo ufw enable
 sudo ufw status
 ```
@@ -279,18 +336,8 @@ curl -s -o /dev/null -w "%{http_code}" http://PORTAL_SERVER_IP:6898/
 curl --connect-timeout 3 http://PORTAL_SERVER_IP:6898/
 ```
 
-> **Note:** Docker's `iptables` rules bypass UFW by default on Ubuntu.
-> To make UFW rules apply to Docker-exposed ports, add the following to
-> `/etc/docker/daemon.json` on the portal server and restart Docker:
->
-> ```json
-> {
->   "iptables": false
-> }
-> ```
->
-> Then restart Docker: `sudo systemctl restart docker` and re-run `docker compose up -d`.
-> Without this, UFW `deny` rules will **not** block traffic to Docker-bound ports.
+Do not disable Docker's iptables integration on a shared host to implement
+this restriction; that would affect unrelated containers.
 
 ---
 

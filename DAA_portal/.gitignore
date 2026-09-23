@@ -1,0 +1,8 @@
+# Runtime content belongs to the private host volume, never the public repository.
+content/*
+!content/News/
+content/News/*
+!content/News/welcome-to-the-portal.md
+.env
+*.pyc
+__pycache__/
